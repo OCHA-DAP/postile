@@ -284,6 +284,7 @@ def main():
     parser.add_argument('--debug', action='store_true', help='activate sanic debug mode')
     parser.add_argument('--fonts', type=str, help='fonts location')
     parser.add_argument('--workers', type=int, help='number of workers', default=1)
+    parser.add_argument('--access-log', action='store_true', help='should access log be generated, slows down the server')
     args = parser.parse_args()
     
     if len(sys.argv) == 1:
@@ -325,6 +326,7 @@ def main():
         workers=args.workers,
         host=args.listen,
         port=args.listen_port,
+        access_log=args.access_log,
         debug=args.debug)
 
 
