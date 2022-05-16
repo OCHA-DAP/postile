@@ -279,10 +279,11 @@ def main():
     parser.add_argument('--pguser', type=str, help='postgres user', default='')
     parser.add_argument('--pgpassword', type=str, help='postgres password', default='')
     parser.add_argument('--listen', type=str, help='listen address', default='127.0.0.1')
-    parser.add_argument('--listen-port', type=str, help='listen port', default=8080)
+    parser.add_argument('--listen-port', type=int, help='listen port', default=8080)
     parser.add_argument('--cors', action='store_true', help='make cross-origin AJAX possible')
     parser.add_argument('--debug', action='store_true', help='activate sanic debug mode')
     parser.add_argument('--fonts', type=str, help='fonts location')
+    parser.add_argument('--workers', type=int, help='number of workers', default=1)
     args = parser.parse_args()
     
     if len(sys.argv) == 1:
@@ -321,6 +322,7 @@ def main():
     app.static('/favicon.ico', str(here / 'static/favicon.ico'))
 
     app.run(
+        workers=args.workers,
         host=args.listen,
         port=args.listen_port,
         debug=args.debug)
