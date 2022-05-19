@@ -10,8 +10,9 @@ import sys
 import re
 import argparse
 import sqlite3
-from pathlib import Path 
+from pathlib import Path
 
+from asyncpg import UndefinedTableError, UndefinedColumnError
 from sanic import Sanic
 from sanic.log import logger
 from sanic import response
@@ -42,10 +43,10 @@ OUTPUT_SRID = 3857
 
 app = Sanic()
 
-# lower zooms can take a while to generate (ie zoom 0->4) 
+# lower zooms can take a while to generate (ie zoom 0->4)
 app.config.RESPONSE_TIMEOUT = 60 * 2
 
-# where am i ? 
+# where am i ?
 here = Path(os.path.abspath(os.path.dirname(__file__)))
 
 jinja_env = Environment(
@@ -162,13 +163,13 @@ async def get_mbtiles(request, z, x, y):
         LIMIT 1 """, coords)
 
     tile = cursor.fetchone()
-    if tile: 
+    if tile:
         return response.raw(
-            tile[0], 
+            tile[0],
             headers={"Content-Type": "application/x-protobuf",
                      "Content-Encoding": "gzip"})
-    else: 
-        return response.raw(b'', 
+    else:
+        return response.raw(b'',
             headers={"Content-Type": "application/x-protobuf"})
 
 async def get_tile_tm2(request, x, y, z):
@@ -222,13 +223,25 @@ async def get_tile_postgis(request, x, y, z, layer):
 
     logger.debug(sql)
 
+    status = 200
+
     async with Config.db_pg.acquire() as conn:
-        rows = await conn.fetch(sql)
-        pbf = b''.join([row[0] for row in rows if row[0]])
+        pbf = b''
+        try:
+            rows = await conn.fetch(sql)
+            row_list = [row[0] for row in rows if row[0]]
+            pbf = b''.join(row_list)
+        except UndefinedTableError as ute:
+            status = 404
+        except UndefinedColumnError as uce:
+            status = 400
+        except Exception as e:
+            status = 500
 
     return response.raw(
         pbf,
-        headers={"Content-Type": "application/x-protobuf"}
+        headers={"Content-Type": "application/x-protobuf"},
+        status=status
     )
 
 def preview(request):
@@ -301,6 +314,7 @@ def main():
     else:
         # no tm2 file given, switching to direct connection to postgis layers
         app.add_route(get_tile_postgis, r'/<layer>/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
+        app.add_route(get_tile_postgis, r'/gis/<layer>/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
     if args.style:
         check_file_exists(args.style)
         Config.style = args.style
