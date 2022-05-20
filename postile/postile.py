@@ -210,39 +210,57 @@ async def get_tile_postgis(request, x, y, z, layer):
     fields = ',' + request.raw_args['fields'] if 'fields' in request.raw_args else ''
     # get geometry column name from query args else geom is used
     geom = request.raw_args.get('geom', 'geom')
-    # compute mercator bounds
-    bounds = mercantile.xy_bounds(x, y, z)
 
-    # make bbox for filtering
-    bbox = f"st_setsrid(st_makebox2d(st_point({bounds.left}, {bounds.bottom}), st_point({bounds.right},{bounds.top})), {OUTPUT_SRID})"
+    pbf = b''
+    passed = _postgis_request_sanity_checks(x, y, z, geom)
 
-    # compute pixel resolution
-    scale = resolution(z)
+    if passed:
 
-    sql = single_layer.format(**locals(), OUTPUT_SRID=OUTPUT_SRID)
+        # compute mercator bounds
+        bounds = mercantile.xy_bounds(x, y, z)
 
-    logger.debug(sql)
+        # make bbox for filtering
+        bbox = f"st_setsrid(st_makebox2d(st_point({bounds.left}, {bounds.bottom}), st_point({bounds.right},{bounds.top})), {OUTPUT_SRID})"
 
-    status = 200
+        # compute pixel resolution
+        scale = resolution(z)
 
-    async with Config.db_pg.acquire() as conn:
-        pbf = b''
-        try:
-            rows = await conn.fetch(sql)
-            row_list = [row[0] for row in rows if row[0]]
-            pbf = b''.join(row_list)
-        except UndefinedTableError as ute:
-            status = 404
-        except UndefinedColumnError as uce:
-            status = 400
-        except Exception as e:
-            status = 500
+        sql = single_layer.format(**locals(), OUTPUT_SRID=OUTPUT_SRID)
+
+        logger.debug(sql)
+
+        status = 200
+
+        async with Config.db_pg.acquire() as conn:
+            try:
+                rows = await conn.fetch(sql)
+                row_list = [row[0] for row in rows if row[0]]
+                pbf = b''.join(row_list)
+            except UndefinedTableError as ute:
+                status = 404
+            except UndefinedColumnError as uce:
+                status = 400
+            except Exception as e:
+                status = 500
+
+    else:
+        status = 400
 
     return response.raw(
         pbf,
         headers={"Content-Type": "application/x-protobuf"},
         status=status
     )
+
+def _postgis_request_sanity_checks(x, y, z, geom) -> bool:
+    if geom and '?' in geom:
+        return False
+
+    lo, hi = mercantile.minmax(z)
+    if not lo <= x <= hi or not lo <= y <= hi:
+        return False
+
+    return True
 
 def preview(request):
     """build and return a preview page
