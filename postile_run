@@ -1,0 +1,17 @@
+#!/usr/bin/with-contenv sh
+
+[ -z "$HDX_GISDB_ADDR" ]    && export HDX_GISDB_ADDR=gis
+[ -z "$HDX_GISDB_DB" ]      && export HDX_GISDB_DB=gis
+[ -z "$HDX_GISDB_PASS" ]    && export HDX_GISDB_PASS=gis
+[ -z "$HDX_GISDB_USER" ]    && export HDX_GISDB_USER=gis
+[ -z "$HDX_GISDB_WORKERS" ] && export HDX_GISDB_WORKERS=3
+
+exec postile \
+    --pghost $HDX_GISDB_ADDR \
+    --pgdatabase $HDX_GISDB_DB \
+    --pguser $HDX_GISDB_USER \
+    --pgpassword $HDX_GISDB_PASS \
+    --listen 0.0.0.0 \
+    --listen-port 80 \
+    --workers $HDX_GISDB_WORKERS
+    --cors
