@@ -1,13 +1,20 @@
-FROM debian:bullseye-slim
+FROM public.ecr.aws/unocha/python3-base-s6:3.9
 
-RUN apt-get update \
-    && apt-get install -y git libprotobuf-dev libprotobuf-c-dev python3.9 python3-pip \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /srv/postile
 
-COPY . /opt/postile
+COPY . .
 
-RUN cd /opt/postile \
-    && pip3 install cython \
-    && pip3 install .
+RUN apk add --virtual .build-deps \
+        build-base \
+        protobuf-dev \
+        protobuf-c-dev \
+        python3-dev && \
+    pip3 install cython && \
+    pip3 install . && \
+    apk del .build-deps && \
+    rm -rf /root/.cache && \
+    rm -rf /var/cache/apk/* && \
+    mkdir -p /etc/services.d/postile && \
+    cp postile_run /etc/services.d/postile/run
 
-CMD ["/usr/local/bin/postile"]
+EXPOSE 80
