@@ -299,6 +299,12 @@ def check_file_exists(filename):
         sys.exit(1)
 
 
+def show_hdx_test_page(request):
+    template = jinja_env.get_template('index_hdx.html')
+    html_content = template.render()
+    return response.html(html_content)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fast VectorTile server with PostGIS backend')
     parser.add_argument('--tm2', type=str, help='TM2 source file (yaml)')
@@ -333,6 +339,7 @@ def main():
         # no tm2 file given, switching to direct connection to postgis layers
         app.add_route(get_tile_postgis, r'/<layer>/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
         app.add_route(get_tile_postgis, r'/gis/<layer>/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
+        app.add_route(show_hdx_test_page, r'/test', methods=['GET'])
     if args.style:
         check_file_exists(args.style)
         Config.style = args.style
