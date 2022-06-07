@@ -340,6 +340,7 @@ def main():
         app.add_route(get_tile_postgis, r'/<layer>/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
         app.add_route(get_tile_postgis, r'/gis/<layer>/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
         app.add_route(show_hdx_test_page, r'/test', methods=['GET'])
+        app.add_route(show_hdx_test_page, r'/gis/test', methods=['GET'])
     if args.style:
         check_file_exists(args.style)
         Config.style = args.style
