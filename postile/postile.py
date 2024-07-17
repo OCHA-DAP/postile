@@ -10,6 +10,7 @@ import sys
 import re
 import argparse
 import sqlite3
+import json
 from pathlib import Path
 
 from asyncpg import UndefinedTableError, UndefinedColumnError
@@ -208,8 +209,8 @@ async def get_tile_postgis(request, x, y, z, layer):
 
     # get fields given in parameters
     fields = ',' + request.raw_args['fields'] if 'fields' in request.raw_args else ''
-    # get geometry column name from query args else geom is used
-    geom = request.raw_args.get('geom', 'geom')
+    # get geometry column name from query args else wkb_geometry is used
+    geom = request.raw_args.get('geom', 'wkb_geometry')
 
     pbf = b''
     passed = _postgis_request_sanity_checks(x, y, z, geom)
@@ -305,6 +306,61 @@ def show_hdx_test_page(request):
     return response.html(html_content)
 
 
+def _input_sanity_check(input_str):
+    if re.match(r'^[A-Za-z0-9_]+$', input_str):
+        return input_str
+    else:
+        raise ValueError(f"Invalid input: {input_str}")
+
+async def get_layer_type(request, layer):
+    """
+    Direct access to a postgis layer
+    """
+    # get geometry column name from query args else wkb_geometry is used
+    geom = request.raw_args.get('geom', 'wkb_geometry')
+    try:
+        geom = _input_sanity_check(geom)
+        layer = _input_sanity_check(layer)
+    except ValueError:
+        return response.raw(
+            json.dumps({'result': 'ValidationError'}).encode('utf-8'),
+            headers={"Content-Type": "application/json"},
+            status=400,
+        )
+
+    sql = 'SELECT ST_GeometryType({geom_column}) FROM {layer} LIMIT 1'.format(
+        geom_column = geom,
+        layer = layer
+    )
+    logger.debug(sql)
+
+    status = 500
+    message = ''
+    async with Config.db_pg.acquire() as conn:
+        try:
+            rows = await conn.fetch(sql)
+            row_list = [row[0] for row in rows if row[0]]
+            if row_list:
+                message = row_list[0]
+            status = 200
+
+        except UndefinedTableError as ute:
+            message = 'undefined table'
+            status = 404
+        except UndefinedColumnError as uce:
+            message = 'undefined column'
+            status = 400
+        except Exception as e:
+            message = 'An error appeared'
+            status = 500
+
+    return response.raw(
+        json.dumps({'result': message}).encode('utf-8'),
+        headers={"Content-Type": "application/json"},
+        status=status
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fast VectorTile server with PostGIS backend')
     parser.add_argument('--tm2', type=str, help='TM2 source file (yaml)')
@@ -341,6 +397,8 @@ def main():
         app.add_route(get_tile_postgis, r'/gis/<layer>/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
         app.add_route(show_hdx_test_page, r'/test', methods=['GET'])
         app.add_route(show_hdx_test_page, r'/gis/test', methods=['GET'])
+        app.add_route(get_layer_type, r'/layer-type/<layer>', methods=['GET'])
+        app.add_route(get_layer_type, r'/gis/layer-type/<layer>', methods=['GET'])
     if args.style:
         check_file_exists(args.style)
         Config.style = args.style
