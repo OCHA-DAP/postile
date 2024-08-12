@@ -223,8 +223,8 @@ async def get_tile_postgis(request, x, y, z, layer):
         # make bbox for filtering
         bbox = f"st_setsrid(st_makebox2d(st_point({bounds.left}, {bounds.bottom}), st_point({bounds.right},{bounds.top})), {OUTPUT_SRID})"
 
-        # compute pixel resolution
-        scale = resolution(z)
+        # compute pixel resolution (Maplibre likes to ask for higher zoom levels so adding +2)
+        scale = resolution(z+2)
 
         sql = single_layer.format(**locals(), OUTPUT_SRID=OUTPUT_SRID)
 
