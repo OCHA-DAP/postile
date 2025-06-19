@@ -42,10 +42,12 @@ LAYERQUERY = re.compile(r'\s*\((?P<query>.*)\)\s+as\s+\w+\s*', re.IGNORECASE | r
 # official EPSG code
 OUTPUT_SRID = 3857
 
-app = Sanic()
+app = Sanic('postile')
 
 # lower zooms can take a while to generate (ie zoom 0->4)
 app.config.RESPONSE_TIMEOUT = 60 * 2
+
+app.config.FALLBACK_ERROR_FORMAT = "json"
 
 # where am i ?
 here = Path(os.path.abspath(os.path.dirname(__file__)))
@@ -55,42 +57,44 @@ jinja_env = Environment(
     autoescape=select_autoescape(['html', 'xml'])
 )
 
-class Config:
-    # postgresql DSN
-    dsn = None
-    # tm2source prepared query
-    tm2query = None
-    # sqlite3 connection
-    db_sqlite = None
-    # style configuration file
-    style = None
-    # database connection pool
-    db_pg = None
-    fonts = None
-
 
 @app.listener('before_server_start')
 async def setup_db_pg(app, loop):
     """
     initiate postgresql connection
     """
-    if Config.dsn:
+
+    dsn = (
+        f"postgres://{os.getenv('POSTILE_PGUSER')}:"
+        f"{os.getenv('POSTILE_PGPASSWORD')}@"
+        f"{os.getenv('POSTILE_PGHOST')}:"
+        f"{os.getenv('POSTILE_PGPORT')}/"
+        f"{os.getenv('POSTILE_PGDATABASE')}"
+    )
+
+    if dsn:
         try:
-            Config.db_pg = await asyncpg.create_pool(Config.dsn, loop=loop)
+            app.ctx.db_pg = await asyncpg.create_pool(dsn, loop=loop)
+            print("PostgreSQL connection pool created successfully!")
         except socket.gaierror:
-            print(f'Cannot establish connection to {Config.dsn}. \
+            print(f'Cannot establish connection to {dsn}. \
 Did you pass correct values to --pghost?')
             raise
         except asyncpg.exceptions.InvalidPasswordError:
-            print(f'Cannot connect to {Config.dsn}. \
+            print(f'Cannot connect to {dsn}. \
 Please check values passed to --pguser and --pgpassword')
             raise
+        except Exception as e:
+            print(f"Failed to connect to PostgreSQL: {e}")
+            raise
+    else:
+        print("No DSN configured - dsn is None")
 
 
 @app.listener('after_server_stop')
 async def cleanup_db_pg(app, loop):
-    if Config.dsn:
-        await Config.db_pg.close()
+    if hasattr(app.ctx, 'db_pg') and app.ctx.db_pg and not app.ctx.db_pg.is_closing():
+        await app.ctx.db_pg.close()
 
 
 def zoom_to_scale_denom(zoom):
@@ -135,72 +139,82 @@ def prepared_query(filename):
     return " union all ".join(queries)
 
 
-@app.route('/style.json')
-async def get_jsonstyle(request):
-    if not Config.style:
-        return response.text('no style available', status=404)
+# @app.route('/style.json')
+# async def get_jsonstyle(request):
+#     if not Config.style:
+#         return response.text('no style available', status=404)
 
-    return await response.file(
-        Config.style,
-        headers={"Content-Type": "application/json"}
-    )
+#     return await response.file(
+#         Config.style,
+#         headers={"Content-Type": "application/json"}
+#     )
 
-@app.route('/fonts/<fontstack:string>/<frange:string>.pbf')
-async def get_fonts(request, fontstack, frange):
-    if not Config.fonts:
-        return response.text('no fonts available', status=404)
-    return await response.file(
-        Path(Config.fonts) / fontstack / f'{frange}.pbf',
-        headers={"Content-Type": "application/x-protobuf"}
-    )
 
-async def get_mbtiles(request, z, x, y):
-    # Flip Y coordinate because MBTiles store tiles in TMS.
-    coords = (x, (1 << z) - 1 - y, z)
-    cursor = Config.db_sqlite.execute("""
-        SELECT tile_data 
-        FROM tiles 
-        WHERE tile_column=? and tile_row=? and zoom_level=?
-        LIMIT 1 """, coords)
+# @app.route('/fonts/<fontstack:str>/<frange:str>')
+# async def get_fonts(request, fontstack, frange):
+#     if not Config.fonts:
+#         return response.text('no fonts available', status=404)
+    
+#     if not frange.endswith('.pbf'):
+#         return response.text('Not found', status=404)
+    
+#     return await response.file(
+#         Path(Config.fonts) / fontstack / frange,  # frange already has .pbf
+#         headers={"Content-Type": "application/x-protobuf"}
+#     )
 
-    tile = cursor.fetchone()
-    if tile:
-        return response.raw(
-            tile[0],
-            headers={"Content-Type": "application/x-protobuf",
-                     "Content-Encoding": "gzip"})
-    else:
-        return response.raw(b'',
-            headers={"Content-Type": "application/x-protobuf"})
 
-async def get_tile_tm2(request, x, y, z):
-    """
-    """
-    scale_denominator = zoom_to_scale_denom(z)
+# async def get_mbtiles(request, z, x, y, ext):
+#     # Flip Y coordinate because MBTiles store tiles in TMS.
+#     coords = (x, (1 << z) - 1 - y, z)
+#     cursor = Config.db_sqlite.execute("""
+#         SELECT tile_data 
+#         FROM tiles 
+#         WHERE tile_column=? and tile_row=? and zoom_level=?
+#         LIMIT 1 """, coords)
 
-    # compute mercator bounds
-    bounds = mercantile.xy_bounds(x, y, z)
-    bbox = f"st_makebox2d(st_point({bounds.left}, {bounds.bottom}), st_point({bounds.right},{bounds.top}))"
+#     tile = cursor.fetchone()
+#     if tile:
+#         return response.raw(
+#             tile[0],
+#             headers={"Content-Type": "application/x-protobuf",
+#                      "Content-Encoding": "gzip"})
+#     else:
+#         return response.raw(b'',
+#             headers={"Content-Type": "application/x-protobuf"})
 
-    sql = Config.tm2query.format(
-        bbox=bbox,
-        scale_denominator=scale_denominator,
-        pixel_width=256,
-        pixel_height=256,
-    )
-    logger.debug(sql)
 
-    async with Config.db_pg.acquire() as conn:
-        # join tiles into one bytes string except null tiles
-        rows = await conn.fetch(sql)
-        pbf = b''.join([row[0] for row in rows if row[0]])
+# async def get_tile_tm2(request, z, x, y, ext):
+#     """
+#     """
+#     scale_denominator = zoom_to_scale_denom(z)
 
-    return response.raw(
-        pbf,
-        headers={"Content-Type": "application/x-protobuf"}
-    )
+#     # compute mercator bounds
+#     bounds = mercantile.xy_bounds(x, y, z)
+#     bbox = f"st_makebox2d(st_point({bounds.left}, {bounds.bottom}), st_point({bounds.right},{bounds.top}))"
 
-async def get_tile_postgis(request, x, y, z, layer):
+#     sql = Config.tm2query.format(
+#         bbox=bbox,
+#         scale_denominator=scale_denominator,
+#         pixel_width=256,
+#         pixel_height=256,
+#     )
+#     logger.debug(sql)
+
+#     async with app.ctx.db_pg.acquire() as conn:
+#         # join tiles into one bytes string except null tiles
+#         rows = await conn.fetch(sql)
+#         pbf = b''.join([row[0] for row in rows if row[0]])
+
+#     return response.raw(
+#         pbf,
+#         headers={"Content-Type": "application/x-protobuf"}
+#     )
+
+
+@app.get('/gis/<layer>/<z:int>/<x:int>/<y=int:ext=pbf>', name="gisgettile")
+@app.get('/<layer>/<z:int>/<x:int>/<y=int:ext=pbf>', name="gettile")
+async def get_tile_postgis(request, layer, z, x, y, ext):
     """
     Direct access to a postgis layer
     """
@@ -208,9 +222,9 @@ async def get_tile_postgis(request, x, y, z, layer):
         return response.text('bad layer name: {}'.format(layer), status=404)
 
     # get fields given in parameters
-    fields = ',' + request.raw_args['fields'] if 'fields' in request.raw_args else ''
+    fields = ',' + request.args.get('fields', '') if request.args.get('fields') else ''
     # get geometry column name from query args else wkb_geometry is used
-    geom = request.raw_args.get('geom', 'wkb_geometry')
+    geom = request.args.get('geom', 'wkb_geometry')
 
     pbf = b''
     passed = _postgis_request_sanity_checks(x, y, z, geom)
@@ -232,7 +246,7 @@ async def get_tile_postgis(request, x, y, z, layer):
 
         status = 200
 
-        async with Config.db_pg.acquire() as conn:
+        async with app.ctx.db_pg.acquire() as conn:
             try:
                 rows = await conn.fetch(sql)
                 row_list = [row[0] for row in rows if row[0]]
@@ -253,6 +267,7 @@ async def get_tile_postgis(request, x, y, z, layer):
         status=status
     )
 
+
 def _postgis_request_sanity_checks(x, y, z, geom) -> bool:
     if geom and '?' in geom:
         return False
@@ -262,6 +277,7 @@ def _postgis_request_sanity_checks(x, y, z, geom) -> bool:
         return False
 
     return True
+
 
 def preview(request):
     """build and return a preview page
@@ -274,24 +290,25 @@ def preview(request):
     html_content = template.render(host=request.host, scheme=request.scheme)
     return response.html(html_content)
 
-def config_tm2(tm2file):
-    """Adds specific routes for tm2 source and prepare the global SQL Query
 
-    """
-    # build the SQL query for all layers found in TM2 file
-    Config.tm2query = prepared_query(tm2file)
-    # add route dedicated to tm2 queries
-    app.add_route(get_tile_tm2, r'/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
-    app.add_route(preview, r'/', methods=['GET'])
+# def config_tm2(tm2file):
+#     """Adds specific routes for tm2 source and prepare the global SQL Query
+
+#     """
+#     # build the SQL query for all layers found in TM2 file
+#     Config.tm2query = prepared_query(tm2file)
+#     # add route dedicated to tm2 queries
+#     app.add_route(get_tile_tm2, r'/<z:int>/<x:int>/<y=int:ext=pbf>', methods=['GET'])
+#     app.add_route(preview, r'/', methods=['GET'])
 
 
-def config_mbtiles(mbtiles):
-    """Adds specific routes for mbtiles source
+# def config_mbtiles(mbtiles):
+#     """Adds specific routes for mbtiles source
 
-    """
-    Config.db_sqlite = sqlite3.connect(mbtiles)
-    app.add_route(get_mbtiles, r'/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
-    app.add_route(preview, r'/', methods=['GET'])
+#     """
+#     Config.db_sqlite = sqlite3.connect(mbtiles)
+#     app.add_route(get_mbtiles, r'/<z:int>/<x:int>/<y=int:ext=pbf>', methods=['GET'])
+#     app.add_route(preview, r'/', methods=['GET'])
 
 
 def check_file_exists(filename):
@@ -300,7 +317,9 @@ def check_file_exists(filename):
         sys.exit(1)
 
 
-def show_hdx_test_page(request):
+@app.get('/test', name="test")
+@app.get('/gis/test', name="gistest")
+async def show_hdx_test_page(request):
     template = jinja_env.get_template('index_hdx.html')
     html_content = template.render()
     return response.html(html_content)
@@ -312,12 +331,15 @@ def _input_sanity_check(input_str):
     else:
         raise ValueError(f"Invalid input: {input_str}")
 
+
+@app.get('/layer-type/<layer>', name="layertype")
+@app.get('/gis/layer-type/<layer>', name="gislayertype")
 async def get_layer_type(request, layer):
     """
     Direct access to a postgis layer
     """
     # get geometry column name from query args else wkb_geometry is used
-    geom = request.raw_args.get('geom', 'wkb_geometry')
+    geom = request.args.get('geom', 'wkb_geometry')
     try:
         geom = _input_sanity_check(geom)
         layer = _input_sanity_check(layer)
@@ -336,7 +358,7 @@ async def get_layer_type(request, layer):
 
     status = 500
     message = ''
-    async with Config.db_pg.acquire() as conn:
+    async with app.ctx.db_pg.acquire() as conn:
         try:
             rows = await conn.fetch(sql)
             row_list = [row[0] for row in rows if row[0]]
@@ -363,9 +385,6 @@ async def get_layer_type(request, layer):
 
 def main():
     parser = argparse.ArgumentParser(description='Fast VectorTile server with PostGIS backend')
-    parser.add_argument('--tm2', type=str, help='TM2 source file (yaml)')
-    parser.add_argument('--mbtiles', type=str, help='read tiles from a mbtiles file')
-    parser.add_argument('--style', type=str, help='GL Style to serve at /style.json')
     parser.add_argument('--pgdatabase', type=str, help='database name', default='osm')
     parser.add_argument('--pghost', type=str, help='postgres hostname', default='')
     parser.add_argument('--pgport', type=int, help='postgres port', default=5432)
@@ -379,40 +398,16 @@ def main():
     parser.add_argument('--workers', type=int, help='number of workers', default=1)
     parser.add_argument('--access-log', action='store_true', help='should access log be generated, slows down the server')
     args = parser.parse_args()
-    
     if len(sys.argv) == 1:
         # display help message when no args are passed.
         parser.print_help()
         sys.exit(1)
 
-    if args.tm2:
-        check_file_exists(args.tm2)
-        config_tm2(args.tm2)
-    elif args.mbtiles: 
-        check_file_exists(args.mbtiles)
-        config_mbtiles(args.mbtiles)
-    else:
-        # no tm2 file given, switching to direct connection to postgis layers
-        app.add_route(get_tile_postgis, r'/<layer>/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
-        app.add_route(get_tile_postgis, r'/gis/<layer>/<z:int>/<x:int>/<y:int>.pbf', methods=['GET'])
-        app.add_route(show_hdx_test_page, r'/test', methods=['GET'])
-        app.add_route(show_hdx_test_page, r'/gis/test', methods=['GET'])
-        app.add_route(get_layer_type, r'/layer-type/<layer>', methods=['GET'])
-        app.add_route(get_layer_type, r'/gis/layer-type/<layer>', methods=['GET'])
-    if args.style:
-        check_file_exists(args.style)
-        Config.style = args.style
-
-    if args.fonts:
-        check_file_exists(args.fonts)
-        Config.fonts = args.fonts
-
-    # interpolate values for postgres connection
-    if not args.mbtiles:
-        Config.dsn = (
-            'postgres://{pguser}:{pgpassword}@{pghost}:{pgport}/{pgdatabase}'
-            .format(**args.__dict__)
-        )
+    os.environ['POSTILE_PGUSER'] = args.pguser or 'gis'
+    os.environ['POSTILE_PGPASSWORD'] = args.pgpassword or 'gis'
+    os.environ['POSTILE_PGHOST'] = args.pghost or 'db'
+    os.environ['POSTILE_PGPORT'] = str(args.pgport or 5432)
+    os.environ['POSTILE_PGDATABASE'] = args.pgdatabase or 'gis'
 
     if args.cors:
         CORS(app)

@@ -8,6 +8,12 @@ on:
       - master
       - prod
     tags: [ '*' ]
+  pull_request:
+    branches:
+      - dev
+      - main
+      - master
+      - prod
   workflow_dispatch:
 
 jobs:
